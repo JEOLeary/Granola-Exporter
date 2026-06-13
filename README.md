@@ -1,6 +1,6 @@
 # Granola-Exporter
 
-Export meeting notes and transcripts from [Granola](https://granola.ai) to local markdown files, organized by folder assignment. Works without a paid Granola subscription by reusing the desktop app's existing session.
+Export meeting notes and transcripts from [Granola.ai](https://granola.ai) to local markdown files, organized by folder assignment. Works without a paid Granola subscription by reusing the desktop app's existing session.
 
 ## Quick Start
 
