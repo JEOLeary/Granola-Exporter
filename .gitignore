@@ -29,4 +29,10 @@ go.work.sum
 
 # Editor/IDE
 # .idea/
-# .vscode/
+.vscode/
+ 
+# Output folder for compiled binaries
+bin/
+
+# Output folder for Granola meeting markdown files
+Granola.ai/
