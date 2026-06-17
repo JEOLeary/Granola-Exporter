@@ -129,20 +129,6 @@ type DocumentDetailResponse struct {
 	Doc APIDocument `json:"doc"`
 }
 
-type DateStr struct {
-	match string
-}
-
-func (d DateStr) String() string { return d.match }
-
-func readCredentials(path string) (*Credentials, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read supabase: %w", err)
-	}
-	return ParseCredentialsBytes(b)
-}
-
 func ParseCredentialsBytes(b []byte) (*Credentials, error) {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(b, &raw); err != nil {
@@ -234,23 +220,11 @@ if ($blob -eq $null) { exit 1 }
 `, target)
 
 	cmd := exec.Command("powershell", "-NoProfile", "-Command", script)
-	var stdout, stderr strings.Builder
+	var stdout strings.Builder
 	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		cmd2 := exec.Command("pwsh", "-NoProfile", "-Command", script)
-		var stdout2, stderr2 strings.Builder
-		cmd2.Stdout = &stdout2
-		cmd2.Stderr = &stderr2
-		if err2 := cmd2.Run(); err2 != nil {
-			return nil, fmt.Errorf("CredMan: no entry for %s", target)
-		}
-		blob, err := base64.StdEncoding.DecodeString(strings.TrimSpace(stdout2.String()))
-		if err != nil {
-			return nil, fmt.Errorf("CredMan decode: %w", err)
-		}
-		return parseCredManBlob(blob)
+		return nil, fmt.Errorf("CredMan: no entry for %s", target)
 	}
 
 	blob, err := base64.StdEncoding.DecodeString(strings.TrimSpace(stdout.String()))
@@ -482,12 +456,6 @@ func Post(token, endpoint string, input, output interface{}) error {
 		return json.Unmarshal(b, output)
 	}
 	return lastErr
-}
-
-func FetchAllDocuments(token string, daysBack int) ([]APIDocument, error) {
-	now := time.Now()
-	after := now.AddDate(0, 0, -daysBack).Format(time.RFC3339)
-	return FetchAllDocumentsAfter(token, &after)
 }
 
 func FetchAllDocumentsAfter(token string, createdAfter *string) ([]APIDocument, error) {
@@ -858,4 +826,37 @@ func ExtractDateFromDoc(doc APIDocument) time.Time {
 		return t
 	}
 	return time.Now()
+}
+
+func ExtractCredentialsFromEncryptedFile(encPath string) (*Credentials, error) {
+	decrypted, err := encryptedjson.DecryptSupabaseJSON(encPath)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt %s: %w", encPath, err)
+	}
+	return ParseCredentialsBytes(decrypted)
+}
+
+func ExtractCredentialsToFile(outPath string) error {
+	creds, err := FindCredentials()
+	if err != nil {
+		return fmt.Errorf("find credentials: %w", err)
+	}
+
+	output := struct {
+		RefreshToken string `json:"refresh_token"`
+		ClientID     string `json:"client_id"`
+	}{
+		RefreshToken: creds.RefreshToken,
+		ClientID:     creds.ClientID,
+	}
+
+	b, err := json.MarshalIndent(output, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+
+	if err := os.WriteFile(outPath, b, 0600); err != nil {
+		return fmt.Errorf("write %s: %w", outPath, err)
+	}
+	return nil
 }

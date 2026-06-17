@@ -2,14 +2,34 @@
 
 Export meeting notes and transcripts from [Granola.ai](https://granola.ai) to local markdown files, organized by folder assignment. Works without a paid Granola subscription by reusing the desktop app's existing session.
 
+## Building
+
+```console
+# Windows
+go build -o bin\granola-backup.exe .\cmd\granola-backup
+
+# macOS / Linux
+go build -o bin/granola-backup ./cmd/granola-backup
+
+# Cross-compile (from any OS):
+GOOS=linux GOARCH=amd64 go build -o bin/granola-backup-linux ./cmd/granola-backup
+GOOS=darwin GOARCH=amd64 go build -o bin/granola-backup-darwin ./cmd/granola-backup
+```
+
 ## Quick Start
 
 ```console
-# On a machine with Granola installed (extracts token automatically):
+# On a machine with Granola installed (incremental since last export):
 granola-backup
 
-# Export only recent meetings:
-granola-backup -since-last-export
+# Export all meetings (ignore manifest, overwrite existing):
+granola-backup -export-all
+
+# Export on a machine without Granola (uses a pre-extracted refresh token):
+granola-backup -refresh-token-file refresh_token.json
+
+# Extract a refresh token from a Granola install for use on another machine:
+granola-backup -extract-token-only refresh_token.json
 
 # Export meetings from a specific date range (30 days starting 01/01/2026):
 granola-backup -since 2026-01-01 -days 30
@@ -21,19 +41,64 @@ granola-backup -output ~/Documents/Meetings
 granola-backup -exclude "Personal,Brag Docs"
 ```
 
+## Two-Machine Workflow
+
+Extract a long-lived refresh token from a machine with Granola, then export meetings from any machine (no Granola install needed).
+
+### Step 1: Extract (on a machine with Granola)
+
+```console
+granola-backup -extract-token-only refresh_token.json
+```
+
+This produces `refresh_token.json` containing `refresh_token` and `client_id`. It uses the same credential extraction as the main export (encrypted file → Windows Credential Manager), writes the token file, and exits without exporting. The tool decrypts `supabase.json.enc` from `%APPDATA%\Granola\` using the Chromium keychain (Local State DPAPI → storage.dek AES-GCM).
+
+**Must run on the actual machine with Granola installed.** The decryption process uses DPAPI, which is machine-bound — the `os_crypt.encrypted_key` in `Local State` can only be decrypted on the same hardware + Windows user account that created it. Copying the files to another machine and pointing `--file` at a UNC path will fail at the DPAPI step.
+
+Remote execution of `granola-backup -extract-token-only` is possible via PowerShell Remoting (WinRM), but setting that up is outside the scope of this guide.
+
+A single `refresh_token.json` works for **all workspaces** tied to your Granola account.
+
+### Step 2: Copy
+
+Copy `refresh_token.json` to the target machine (USB, SCP, sync, etc). It is a plain JSON file — protect it like a password.
+
+### Step 3: Export (any machine, no Granola)
+
+```console
+granola-backup -refresh-token-file refresh_token.json
+```
+
+The `-refresh-token-file` flag skips the entire fallback chain (CDP, file-based). It reads `refresh_token` + `client_id`, calls the WorkOS refresh endpoint for a fresh `access_token`, then exports via the Private API.
+
+### Refresh Token Lifespan
+
+WorkOS refresh tokens are **long-lived but not indefinite**. Observations:
+
+| Aspect | Typical Value |
+| - | - |
+| Access token TTL | ~6 hours (`expires_in: 21599` seconds) — auto-refreshed by `-refresh-token-file` on each run |
+| Refresh token TTL | Not publicly documented by WorkOS. Observed to persist months across Granola app reinstalls. |
+| Invalidation triggers | Password change, session revocation in WorkOS admin, account deletion, token rotation on re-auth |
+
+**The refresh token does not expire while you use it regularly.** Each successful export extends its useful life. If the refresh token does expire, re-run Step 1 on the Granola machine to produce a fresh `refresh_token.json`.
+
+### Known Issues
+
+- **Granola re-auth invalidates old tokens**: If you sign out of Granola and sign back in, the old refresh token is invalidated. Extract a fresh one.
+- **Clock skew**: The WorkOS refresh endpoint checks timestamps. Ensure both machines have reasonably accurate system clocks.
+- **Cross-platform**: `granola-backup -extract-token-only` works on Windows and macOS. The `refresh_token.json` works on any OS — Windows, macOS, or Linux.
+
 ## Project Structure
 
 ```text
 cmd/granola-backup/      # CLI entry point, flag parsing, fallback orchestration
 internal/
-  config/                # YAML config loading
   redact/                # JWT/token redaction
-  encryptedjson/         # DPAPI / macOS Keychain decryption
+  encryptedjson/         # Chromium keychain + AES-GCM decryption
   api/                   # Granola Private REST API client
   output/                # Meeting model, manifest, markdown templating
-  mcp/                   # MCP JSON-RPC client (OAuth device flow)
-  cdp/                   # Chrome DevTools Protocol automation
-  sqlcipher/             # SQLCipher database extraction
+  cdp/                   # Chrome DevTools Protocol token extraction
 ```
 
 ## Usage
@@ -47,26 +112,26 @@ granola-backup [flags]
 | Flag | Default | Description |
 | - | - | - |
 | `-output` | `Granola.ai` | Output directory for markdown |
-| `-days` | `365` | Days of history to fetch (ignored if `-since` or `-since-last-export` is set) |
-| `-since` | `""` | Fetch meetings created after this date (`YYYY-MM-DD` or RFC3339). Takes priority over `-days` and `-since-last-export` |
-| `-since-last-export` | `false` | Only fetch meetings since the latest exported file |
-| `-overwrite` | `false` | Overwrite existing files (default: skip) |
+| `-days` | `365` | Days of history to fetch (ignored if `-since` is set) |
+| `-since` | `""` | Fetch meetings created after this date (`YYYY-MM-DD` or RFC3339). Takes priority over `-days` |
+| `-export-all` | `false` | Export all meetings, ignoring last-export manifest (implies `-overwrite`) |
+| `-overwrite` | `false` | Overwrite existing files |
 | `-debug` | `false` | Enable debug logging (dumps raw API fields for diagnostics) |
-| `-token-file` | `./granola_token.json` | MCP OAuth token file path |
-| `-node-path` | `""` | Path to Node.js 24+ executable (for SQLCipher extraction) |
 | `-exclude` | `""` | Comma-separated folder names to exclude (e.g. `-exclude "Personal,Brag Docs"`) |
+| `-refresh-token-file` | `""` | Path to `refresh_token.json` from `granola-backup -extract-token-only`. Skips all fallback methods, uses WorkOS refresh directly |
+| `-extract-token-only` | `""` | Extract `refresh_token.json` and exit (no export). Useful for producing a token on a Granola machine for use on another machine |
 | `-config` | `granola-backup.yaml` | YAML config file for persistent flag values (searches `granola-backup.yaml` then `granola-backup.yml`) |
 | `-granola-path` | _(auto-detected)_ | Granola executable path |
 
 ### Date Filtering
 
-The three date flags interact in priority order:
+By default, only meetings since the last export are fetched (tracked via `exported.json`). Two flags override this:
 
 1. `-since` — explicit date, highest priority
-2. `-since-last-export` — computes date from manifest or filename scan
+2. `-export-all` — exports everything, ignoring the manifest
 3. `-days` — relative range, lowest priority (default: 365)
 
-If `-since-last-export` is used but no previous exports exist, it falls back to `-days`.
+The manifest date is used when no flags are given. If no previous export exists, it falls back to `-days`.
 
 ## Config File
 
@@ -76,13 +141,11 @@ Create `granola-backup.yaml` in the current directory to set persistent defaults
 output: "Granola.ai"
 days: 365
 since: ""
-since-last-export: false
 overwrite: false
 debug: false
-token-file: ""
-node-path: ""
 granola-path: "C:\\Users\\{USERNAME}}\\AppData\\Local\\Programs\\granola\\Granola.exe"
 exclude: "Personal,Brag Docs"
+refresh-token-file: ""
 ```
 
 Use a custom path with the `-config` flag:
@@ -183,72 +246,100 @@ Transcript timestamps are removed when every segment has the same timestamp valu
 
 | OS | Status | Notes |
 | - | - | - |
-| **Windows** | Full | CDP token extraction, DPAPI decryption, Credential Manager |
-| **macOS** | Partial | CDP token extraction, Keychain decryption |
-| **Linux** | Partial | MCP auth only (no Granola desktop, no encrypted credential files) |
+| **Windows** | Full | CDP token extraction, DPAPI decryption, Credential Manager, refresh token extraction |
+| **macOS** | Full | CDP token extraction, Keychain decryption, refresh token extraction |
+| **Linux** | Full | Export only (no Granola desktop needed) via `-refresh-token-file` |
 
 ### Dependencies
 
 - **Go 1.24+** (to build from source)
 - **PowerShell** (Windows DPAPI operations, always present on Windows)
-- **Granola desktop app** (for CDP-based token extraction; optional if you have file-based credentials)
+- **Granola desktop app** (for CDP-based token extraction or refresh token extraction; optional if you have a `refresh_token.json` from another machine)
 
-Build from source with `go build ./cmd/granola-backup`.
+Build from source — see [Building](#building).
 
 ## Architecture
 
-Granola-Exporter uses a **fallback chain** of extraction methods, each tried in order until one succeeds:
+Granola-Exporter uses a **fallback chain** of extraction methods, each tried in order until one succeeds. File-based credentials are tried first (faster, no app launch), falling through to CDP:
 
 ```text
-MCP API (OAuth device flow)
-  → CDP token + Private API (launches Granola with --remote-debugging-port)
-    → File-based credentials + Private API
-      → supabase.json.enc (DPAPI on Windows, Keychain on macOS)
-      → supabase.json.enc.bak (encrypted backup)
-      → Windows Credential Manager (cross-keychain format)
-    → SQLCipher database extraction (Node.js + better-sqlite3-multiple-ciphers)
-      → CDP DOM extraction (browser automation fallback)
+File-based credentials + Private API
+  → supabase.json.enc (DPAPI on Windows, Keychain on macOS)
+  → supabase.json.enc.bak (encrypted backup)
+  → Windows Credential Manager (cross-keychain format)
+    → CDP token + Private API (launches Granola with --remote-debugging-port)
 ```
 
 ### Method Details
 
-#### 1. MCP API (`internal/mcp/`)
-
-Granola's Model Context Protocol server. Uses OAuth2 device authorization flow. Requires one-time browser-based authentication. Produces a `granola_token.json` file.
-
-#### 2. CDP Token + Private API (`internal/cdp/` + `internal/api/`)
-
-Launches Granola with `--remote-debugging-port=9222`, connects via Chrome DevTools Protocol, and calls `window.electron.ipcInvoke('get-session')` to extract the live JWT. Uses this token with Granola's private REST API at `api.granola.ai`. This is the primary path on Windows/macOS — it works automatically when Granola is installed.
-
-#### 3. File-based Credentials + Private API (`internal/api/` + `internal/encryptedjson/`)
+#### 1. File-based Credentials + Private API (`internal/api/` + `internal/encryptedjson/`)
 
 Reads WorkOS session tokens from Granola's on-disk credential files. Supports these sources:
 
 | Source | Format | Platform |
 | - | - | - |
-| `supabase.json.enc` | DPAPI / Keychain AES-GCM | Windows DPAPI, macOS Keychain |
-| `supabase.json.enc.bak` | Encrypted backup | Same as above |
+| `supabase.json.enc` | AES-256-GCM (12-byte nonce + ciphertext + 16-byte tag), key from `storage.dek` | All platforms |
+| `supabase.json.enc.bak` | Encrypted backup (same scheme) | Same as above |
 | Windows CredMan | `cross-keychain` format | Windows |
 
 Once credentials are obtained, WorkOS token refresh is attempted if the access token is expired. The Private API provides ProseMirror-formatted notes (with fallbacks: ProseMirror `notes` → `last_viewed_panel.content` HTML-to-markdown), dedicated transcript endpoint, and document-to-list (folder) mappings. If the list endpoint returns empty notes, a per-document detail fetch (`POST /v1/get-document`) is tried as a second pass.
 
-#### 4. SQLCipher Database (`internal/sqlcipher/`)
+#### 2. CDP Token + Private API (`internal/cdp/` + `internal/api/`)
 
-Decrypts `granola.db` using Granola's Data Encryption Key (DEK) from `storage.dek`. The DEK chain on Windows:
+Launches Granola with `--remote-debugging-port=9222`, connects via Chrome DevTools Protocol, and calls `window.electron.ipcInvoke('get-session')` to extract the live JWT. Uses this token with Granola's private REST API at `api.granola.ai`. This is the fallback path when file-based credentials are unavailable.
+
+### Encrypted File Format
+
+The DEK (Data Encryption Key) chain on Windows:
 
 ```text
-Local State → DPAPI CryptUnprotectData → 32-byte AES key
-                                               ↓
-storage.dek → AES-256-GCM decrypt → base64 DEK → 32-byte SQLCipher key
-                                               ↓
-granola.db → PRAGMA key = "x'<hex>'" with cipher=sqlcipher, legacy=4
+Local State
+  os_crypt.encrypted_key (base64)
+    → strip 5-byte "DPAPI" prefix
+    → DPAPI Unprotect (scope=CurrentUser)
+    → 32-byte AES-256 key
+        ↓
+storage.dek (75 bytes)
+  "v10" | nonce(12) | ciphertext(44) | tag(16)
+    → AES-256-GCM decrypt with AES key
+    → base64-encoded DEK (44 chars)
+        ↓
+DEK key (32 bytes hex, machine-specific)
 ```
 
-**Status:** Key extraction is verified working, but the `better-sqlite3-multiple-ciphers` native addon has NODE_MODULE_VERSION incompatibility (Electron 146 vs Node 24 137). The database schema does not contain a `document_folders` table, so folder mapping is not available from this path.
+The DEK key decrypts all `.enc` files in `%APPDATA%\Granola\`:
 
-#### 5. CDP DOM Extraction (`internal/cdp/`)
+| Encrypted | Decrypted | Size | Content |
+| - | - | - | - |
+| `supabase.json.enc` | WorkOS tokens + session + user info | ~2.6 KB | `access_token`, `refresh_token`, `session_id`, `user_info` (email, name) |
+| `stored-accounts.json.enc` | Cross-app auth accounts | ~3 KB | Account tokens for multiple sign-in methods |
+| `user-preferences.json.enc` | App preferences | ~5 KB | Theme, folders, onboarding state, paywall status |
+| `cache-v6.json.enc` | Full app cache | ~1 MB | Panel templates, document lists, transcripts, calendars, recipes, workspace data, feature flags |
 
-Last-resort browser automation. Launches Granola with CDP, scrapes visible text from the meeting detail view, and falls back to heap memory search for note data objects.
+Each `.enc` file format: `nonce(12)` | `ciphertext` | `tag(16)` — AES-256-GCM with the DEK key, no AAD.
+
+To decrypt manually (PowerShell):
+
+```powershell
+$ls = Get-Content "$env:APPDATA\Granola\Local State" -Raw | ConvertFrom-Json
+$encKey = [Convert]::FromBase64String($ls.os_crypt.encrypted_key)[5..]  # strip "DPAPI"
+$aesKey = [System.Security.Cryptography.ProtectedData]::Unprotect(
+    $encKey, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+
+$dekBytes = [System.IO.File]::ReadAllBytes("$env:APPDATA\Granola\storage.dek")
+$dek = [byte[]]::new(44)
+$gcm = [System.Security.Cryptography.AesGcm]::new($aesKey, 16)
+$gcm.Decrypt($dekBytes[3..14], $dekBytes[15..58], $dekBytes[59..74], $dek)
+$gcm.Dispose()
+$dekKey = [Convert]::FromBase64String([System.Text.Encoding]::UTF8.GetString($dek))
+
+$enc = [System.IO.File]::ReadAllBytes("$env:APPDATA\Granola\supabase.json.enc")
+$plain = [byte[]]::new($enc.Length - 28)
+$gcm = [System.Security.Cryptography.AesGcm]::new($dekKey, 16)
+$gcm.Decrypt($enc[0..11], $enc[12..($enc.Length-17)], $enc[($enc.Length-16)..], $plain)
+$gcm.Dispose()
+[System.Text.Encoding]::UTF8.GetString($plain)
+```
 
 ### Token Refresh
 
@@ -285,30 +376,16 @@ Each export run creates/updates `exported.json` in the output directory:
 }
 ```
 
-Documents already in the manifest are skipped (unless `-overwrite` is set). The API path sorts documents by `CreatedAt` descending and stops at the first already-exported document.
+Documents already in the manifest are skipped by default (incremental mode). Use `-export-all` to ignore the manifest and re-export everything. The API path sorts documents by `CreatedAt` descending and stops at the first already-exported document.
 
-## Comparison to Similar Tools
-
-| Feature | Granola-Exporter | graincrawl | theantichris/granola | magarcia/granola-cli |
-| - | - | - | - | - |
-| **Auth: CDP token** | Yes | No | No | No |
-| **Auth: File-based** | supabase.json.enc, Windows CredMan | supabase.json/enc (macOS Keychain) | supabase.json | supabase.json → Keychain |
-| **Auth: Windows CredMan** | Yes | No | No | No |
-| **Auth: MCP OAuth** | Yes | No | No | No |
-| **Token refresh** | WorkOS | No | No | WorkOS (with lock) |
-| **Encrypted files** | DPAPI + macOS Keychain | macOS Keychain only | No | No |
-| **Export format** | Markdown files by folder | CLI output / files | CLI output files | CLI output |
-| **Folder organization** | Yes (lists API) | Yes (lists API) | No | No |
-| **Transcript support** | Dedicated endpoint | No | Cache file only | No |
-| **Headless/remote** | Yes (file/MCP) | Yes | Yes | Yes |
+Earlier projects exploring the undocumented Granola API — [graincrawl](https://github.com/graincrawl), [theantichris/granola](https://github.com/theantichris/granola), and [magarcia/granola-cli](https://github.com/magarcia/granola-cli) — provided inspiration and useful reference for this work.
 
 ## Suggested Improvements
 
 ### Decryption
 
-- **Investigate Windows `supabase.json.enc` format**: On some machines, the file uses an unknown encryption format (not raw DPAPI, not Chromium OSCrypt v10). Likely wrapped in IPC framing from the SUPABASE_STORAGE_PROCESS child process.
 - **macOS Keychain verification**: The AES-GCM decryption path for macOS (`internal/encryptedjson/`) follows the standard Electron safeStorage format but has not been tested on actual macOS hardware.
-- **SQLCipher key mismatch**: The extracted DEK does not open `granola.db` despite verified key derivation. Possible causes: database rekey, version mismatch, or different SQLCipher parameters than declared (`legacy = 4`).
+- **Fix `encryptedjson` DPAPI path**: `decryptWindowsDPAPI` passes the raw encrypted file to `CryptUnprotectData` with `dwFlags=0`. This fails (error 13) because `.enc` files are not raw DPAPI — they are AES-GCM encrypted with the DEK key from `storage.dek`. The Chromium/Electron DPAPI key in `Local State` requires stripping the 5-byte `"DPAPI"` prefix and using `ProtectedData.Unprotect` (which passes `CRYPTPROTECT_UI_FORBIDDEN` flag).
 
 ### Features
 
@@ -324,10 +401,8 @@ Documents already in the manifest are skipped (unless `-overwrite` is set). The 
 | - | - |
 | **CDP** (Chrome DevTools Protocol) | Protocol used to inspect and control Chromium-based browsers. Granola-Exporter launches Granola with `--remote-debugging-port` and uses CDP to extract the session JWT from the renderer process. |
 | **DPAPI** (Data Protection API) | Windows encryption service that protects data at rest using the logged-in user's credentials. Used to decrypt Granola's `supabase.json.enc` credential file. |
-| **MCP** (Model Context Protocol) | Granola's JSON-RPC API server used by AI assistants. Granola-Exporter uses it as a fallback auth path via OAuth2 device authorization flow. |
 | **ProseMirror** | Rich text editor framework. Granola stores notes as ProseMirror JSON documents; the exporter converts them to markdown. |
 | **WorkOS** | Identity platform that provides Granola's authentication (login, token issuance, refresh). The exporter uses WorkOS refresh tokens to obtain fresh access tokens. |
-| **SQLCipher** | SQLite extension that provides transparent 256-bit AES encryption. Granola's local database (`granola.db`) uses SQLCipher. |
 | **JWT** (JSON Web Token) | Auth token used to authenticate API requests. Granola-Exporter extracts the JWT from the desktop app's session or from credential files. |
 | **REST API** | Granola's private HTTP API at `api.granola.ai` — endpoints for documents, transcripts, and folder metadata. The primary data source for exports. |
 
@@ -345,7 +420,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/granola-backup -output /var/backups/granola -since-last-export
+ExecStart=/usr/local/bin/granola-backup -output /var/backups/granola
 User=backup
 ```
 
@@ -373,24 +448,22 @@ sudo systemctl start granola-backup.timer
 
 Check logs with `journalctl -u granola-backup.service`.
 
-## Building from Source
+## Docker
 
-### Windows
-
-```console
-go build -o bin/granola-backup.exe ./cmd/granola-backup
-```
-
-### Linux (cross-compile)
+Build and run the export in a lightweight Linux container (25 MB). Only the `-refresh-token-file` path works — token extraction (`-extract-token-only`) requires the Granola desktop app and won't run inside a container.
 
 ```console
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/granola-backup-linux ./cmd/granola-backup
-```
+# Build
+docker compose build
 
-### macOS (cross-compile)
+# Run (mounts ./refresh_token.json and ./output/)
+docker compose up
 
-```console
-GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o bin/granola-backup-darwin ./cmd/granola-backup
+# Or manually:
+docker run --rm \
+  -v ./refresh_token.json:/token/refresh_token.json:ro \
+  -v ./output:/output \
+  granola-backup
 ```
 
 ## License

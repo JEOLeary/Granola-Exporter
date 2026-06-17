@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -12,31 +13,33 @@ import (
 
 	"github.com/JEOLeary/granola-backup/internal/api"
 	"github.com/JEOLeary/granola-backup/internal/cdp"
-	"github.com/JEOLeary/granola-backup/internal/config"
-	"github.com/JEOLeary/granola-backup/internal/mcp"
 	"github.com/JEOLeary/granola-backup/internal/output"
-	"github.com/JEOLeary/granola-backup/internal/sqlcipher"
 )
 
+type refreshTokenFile struct {
+	RefreshToken string `json:"refresh_token"`
+	ClientID     string `json:"client_id"`
+}
+
 func main() {
-	configPath := config.FindPath()
-	cfg := config.Load(configPath)
+	configPath := findConfigPath()
+	cfg := loadConfig(configPath)
 	if cfg == nil {
-		cfg = &config.Config{}
+		cfg = &Config{}
 	}
 
-	outputDir := flag.String("output", config.StrVal(cfg.Output, "Granola.ai"), "Output directory for markdown files")
-	tokenFile := flag.String("token-file", config.StrVal(cfg.TokenFile, ""), "MCP token file path (default: ./granola_token.json)")
-	nodePath := flag.String("node-path", config.StrVal(cfg.NodePath, ""), "Path to Node.js 24+ executable")
+	outputDir := flag.String("output", strVal(cfg.Output, "Granola.ai"), "Output directory for markdown files")
 	granolaPath := flag.String("granola-path",
-		config.StrVal(cfg.GranolaPath, `C:\Users\JEOLeary\AppData\Local\Programs\granola\Granola.exe`),
+		strVal(cfg.GranolaPath, `C:\Users\JEOLeary\AppData\Local\Programs\granola\Granola.exe`),
 		"Granola executable path")
-	days := flag.Int("days", config.IntVal(cfg.Days, 365), "Number of days of history to fetch (only if -since or -since-last-export not used)")
-	sinceStr := flag.String("since", config.StrVal(cfg.Since, ""), "Fetch meetings created after this date (YYYY-MM-DD or RFC3339). Takes priority over -days and -since-last-export")
-	overwrite := flag.Bool("overwrite", config.BoolVal(cfg.Overwrite, false), "Overwrite existing files")
-	debug := flag.Bool("debug", config.BoolVal(cfg.Debug, false), "Enable debug logging")
-	sinceLastExport := flag.Bool("since-last-export", config.BoolVal(cfg.SinceLastExport, false), "Only fetch meetings since the latest exported file")
-	exclude := flag.String("exclude", config.StrVal(cfg.Exclude, ""), "Comma-separated folder names to exclude (e.g. \"Personal,Brag Docs\")")
+	days := flag.Int("days", intVal(cfg.Days, 365), "Number of days of history to fetch")
+	sinceStr := flag.String("since", strVal(cfg.Since, ""), "Fetch meetings created after this date (YYYY-MM-DD or RFC3339). Takes priority over -days")
+	overwrite := flag.Bool("overwrite", boolVal(cfg.Overwrite, false), "Overwrite existing files")
+	debug := flag.Bool("debug", boolVal(cfg.Debug, false), "Enable debug logging")
+	exportAll := flag.Bool("export-all", false, "Export all meetings, ignoring last-export manifest")
+	exclude := flag.String("exclude", strVal(cfg.Exclude, ""), "Comma-separated folder names to exclude (e.g. \"Personal,Brag Docs\")")
+	refreshTokenFile := flag.String("refresh-token-file", strVal(cfg.RefreshTokenFile, ""), "Path to refresh_token.json from granola-backup -extract-token-only (skips all fallback methods)")
+	extractTokenOnly := flag.String("extract-token-only", "", "Extract refresh_token.json and exit (no export)")
 	flag.String("config", "", "Path to config file (default: granola-backup.yaml/yml in current dir)")
 	flag.Parse()
 
@@ -56,7 +59,11 @@ func main() {
 		outDir = filepath.Join(cwd, outDir)
 	}
 
-	createdAfter := computeCreatedAfter(outDir, *sinceLastExport, *days, *sinceStr)
+	sinceLastExport := !*exportAll
+	if *exportAll {
+		*overwrite = true
+	}
+	createdAfter := computeCreatedAfter(outDir, sinceLastExport, *days, *sinceStr)
 
 	fmt.Println("=== Granola Backup ===")
 	fmt.Println("Output:", outDir)
@@ -67,6 +74,12 @@ func main() {
 	}
 	fmt.Println("Overwrite:", *overwrite)
 	fmt.Println("Debug:", *debug)
+	if *exportAll {
+		fmt.Println("Export: all meetings")
+	}
+	if sinceLastExport {
+		fmt.Println("Export: since last export (incremental)")
+	}
 	if configPath != "" {
 		fmt.Println("Config:", configPath)
 	}
@@ -77,79 +90,58 @@ func main() {
 		fmt.Println("Exclude folders:", excludeList)
 	}
 	fmt.Println()
-
-	tokFile := *tokenFile
-	if tokFile == "" {
-		cwd, _ := os.Getwd()
-		tokFile = filepath.Join(cwd, "granola_token.json")
-	}
-
-	mcpClient := mcp.NewMCPClient(tokFile)
-
-	if mcpClient.HasToken() {
-		fmt.Println("Trying MCP API...")
-		exported, err := mcpClient.ExportAll(outDir, *overwrite)
+	if *refreshTokenFile != "" {
+		exported, err := exportViaRefreshToken(*refreshTokenFile, outDir, createdAfter, *overwrite, *debug, excludeList)
 		if err == nil {
-			fmt.Printf("\nExported %d meetings via MCP.\n", exported)
+			fmt.Printf("\nExported %d meetings via refresh token.\n", exported)
 			return
 		}
-		fmt.Printf("  MCP failed: %v\n", err)
-		fmt.Println()
+		fmt.Fprintf(os.Stderr, "Refresh token export failed: %v\n", err)
+		os.Exit(1)
 	}
 
-	fmt.Println("Trying CDP token + Private API...")
-	{
-		cdpExt := cdp.NewCDPExtractor(*granolaPath)
-		token, cdpErr := cdpExt.FetchToken()
-		if cdpErr == nil {
-			exported, apiErr := exportViaToken(token, outDir, createdAfter, *overwrite, *debug, excludeList)
-			if apiErr == nil {
-				fmt.Printf("\nExported %d meetings via CDP+API.\n", exported)
-				return
-			}
-			fmt.Printf("  CDP+API failed: %v\n", apiErr)
-		} else {
-			fmt.Printf("  CDP token: %v\n", cdpErr)
+	if *extractTokenOnly != "" {
+		fmt.Println("Extracting refresh_token.json ...")
+		if err := api.ExtractCredentialsToFile(*extractTokenOnly); err != nil {
+			fmt.Fprintf(os.Stderr, "Token extraction failed: %v\n", err)
+			os.Exit(1)
 		}
+		fmt.Printf("Credentials written to: %s\n", *extractTokenOnly)
+		return
 	}
-	fmt.Println()
 
+	// file-based first, CDP fallback
+	tryExportViaFileAPI(outDir, createdAfter, *overwrite, *debug, excludeList)
+	tryExportViaCDP(*granolaPath, outDir, createdAfter, *overwrite, *debug, excludeList)
+}
+
+func tryExportViaFileAPI(outputDir string, createdAfter *string, overwrite, debug bool, exclude []string) {
 	fmt.Println("Trying file-based Private API...")
-	exported, err := exportViaAPI(outDir, createdAfter, *overwrite, *debug, excludeList)
+	exported, err := exportViaAPI(outputDir, createdAfter, overwrite, debug, exclude)
 	if err == nil {
 		fmt.Printf("\nExported %d meetings via Private API.\n", exported)
-		return
+		os.Exit(0)
 	}
-	fmt.Printf("  Private API failed: %v\n", err)
-	fmt.Println()
+	fmt.Printf("  Private API failed: %v\n\n", err)
+}
 
-	home, _ := os.UserHomeDir()
-	cacheDir := filepath.Join(home, ".granola-backup")
-
-	sqlcipherExt := sqlcipher.NewSQLCipherExtractor(*granolaPath, cacheDir, *nodePath)
-	fmt.Println("Trying SQLCipher extraction...")
-	exported, err = sqlcipherExt.ExportAll(outDir, *overwrite)
-	if err == nil {
-		fmt.Printf("\nExported %d meetings via SQLCipher.\n", exported)
-		return
-	}
-	fmt.Printf("  SQLCipher failed: %v\n", err)
-	fmt.Println()
-
-	fmt.Println("Trying CDP extraction...")
-	{
-		cdpExt := cdp.NewCDPExtractor(*granolaPath)
-		exported, err = cdpExt.ExtractAll(outDir, *overwrite)
-		if err == nil {
-			fmt.Printf("\nExported %d meetings via CDP.\n", exported)
+func tryExportViaCDP(granolaPath, outputDir string, createdAfter *string, overwrite, debug bool, exclude []string) {
+	fmt.Println("Trying CDP token + Private API...")
+	cdpExt := cdp.NewCDPExtractor(granolaPath)
+	token, cdpErr := cdpExt.FetchToken()
+	if cdpErr == nil {
+		exported, apiErr := exportViaToken(token, outputDir, createdAfter, overwrite, debug, exclude)
+		if apiErr == nil {
+			fmt.Printf("\nExported %d meetings via CDP+API.\n", exported)
 			return
 		}
-		fmt.Printf("  CDP failed: %v\n", err)
+		fmt.Printf("  CDP+API failed: %v\n", apiErr)
+	} else {
+		fmt.Printf("  CDP token: %v\n", cdpErr)
 	}
 
 	fmt.Println("\nAll extraction methods failed.")
-	fmt.Println("Try: run 'granola-backup' after launching Granola manually,")
-	fmt.Println("  or authenticate with MCP (will prompt for browser auth on first run).")
+	fmt.Println("Try: run 'granola-backup' after launching Granola manually.")
 	os.Exit(1)
 }
 
@@ -323,6 +315,37 @@ func processDocs(docs []api.APIDocument, listMapping map[string][]api.ListInfo, 
 
 	wg.Wait()
 	return exported
+}
+
+func exportViaRefreshToken(path string, outputDir string, createdAfter *string, overwrite bool, debug bool, exclude []string) (int, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("read refresh token file: %w", err)
+	}
+	var rt refreshTokenFile
+	if err := json.Unmarshal(b, &rt); err != nil {
+		return 0, fmt.Errorf("parse refresh token file: %w", err)
+	}
+	if rt.RefreshToken == "" {
+		return 0, fmt.Errorf("refresh_token is empty in %s", path)
+	}
+	if rt.ClientID == "" {
+		return 0, fmt.Errorf("client_id is empty in %s", path)
+	}
+
+	creds := &api.Credentials{
+		RefreshToken: rt.RefreshToken,
+		ClientID:     rt.ClientID,
+	}
+
+	fmt.Println("Refreshing access token via WorkOS...")
+	refreshed, err := api.RefreshCredentials(creds)
+	if err != nil {
+		return 0, fmt.Errorf("refresh: %w", err)
+	}
+	fmt.Println("  Token refreshed")
+
+	return exportViaToken(refreshed.AccessToken, outputDir, createdAfter, overwrite, debug, exclude)
 }
 
 func isExcluded(lists []api.ListInfo, exclude []string) bool {

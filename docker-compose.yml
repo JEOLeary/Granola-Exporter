@@ -1,0 +1,12 @@
+services:
+  granola-backup:
+    build: .
+    container_name: granola-backup
+    volumes:
+      - ./refresh_token.json:/token/refresh_token.json:ro
+      - ./output:/output
+    command:
+      - -refresh-token-file
+      - /token/refresh_token.json
+      - -output
+      - /output

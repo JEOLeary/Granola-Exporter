@@ -1,4 +1,4 @@
-package config
+package main
 
 import (
 	"os"
@@ -8,19 +8,17 @@ import (
 )
 
 type Config struct {
-	Output          *string `yaml:"output"`
-	TokenFile       *string `yaml:"token-file"`
-	NodePath        *string `yaml:"node-path"`
-	GranolaPath     *string `yaml:"granola-path"`
-	Days            *int    `yaml:"days"`
-	Since           *string `yaml:"since"`
-	SinceLastExport *bool   `yaml:"since-last-export"`
-	Overwrite       *bool   `yaml:"overwrite"`
-	Debug           *bool   `yaml:"debug"`
-	Exclude         *string `yaml:"exclude"`
+	Output           *string `yaml:"output"`
+	GranolaPath      *string `yaml:"granola-path"`
+	Days             *int    `yaml:"days"`
+	Since            *string `yaml:"since"`
+	Overwrite        *bool   `yaml:"overwrite"`
+	Debug            *bool   `yaml:"debug"`
+	Exclude          *string `yaml:"exclude"`
+	RefreshTokenFile *string `yaml:"refresh-token-file"`
 }
 
-func FindPath() string {
+func findConfigPath() string {
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		if args[i] == "-config" && i+1 < len(args) {
@@ -38,7 +36,7 @@ func FindPath() string {
 	return ""
 }
 
-func Load(path string) *Config {
+func loadConfig(path string) *Config {
 	if path == "" {
 		return nil
 	}
@@ -53,21 +51,21 @@ func Load(path string) *Config {
 	return &cfg
 }
 
-func StrVal(s *string, def string) string {
+func strVal(s *string, def string) string {
 	if s != nil {
 		return *s
 	}
 	return def
 }
 
-func IntVal(i *int, def int) int {
+func intVal(i *int, def int) int {
 	if i != nil {
 		return *i
 	}
 	return def
 }
 
-func BoolVal(b *bool, def bool) bool {
+func boolVal(b *bool, def bool) bool {
 	if b != nil {
 		return *b
 	}

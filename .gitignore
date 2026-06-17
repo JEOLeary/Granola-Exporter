@@ -36,3 +36,4 @@ bin/
 
 # Output folder for Granola meeting markdown files
 Granola.ai/
+refresh_token.json
