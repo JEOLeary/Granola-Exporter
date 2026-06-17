@@ -1,6 +1,7 @@
 package cdp
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -216,36 +217,83 @@ func (c *CDPExtractor) FetchToken() (string, error) {
 		time.Sleep(2 * time.Second)
 	}
 
-	val, err := c.evaluate(target.WebSocketDebug, `window.electron.ipcInvoke('get-session')`, true)
-	if err != nil {
-		return "", fmt.Errorf("get-session: %w", err)
-	}
-
-	session, ok := val.(map[string]interface{})
-	if !ok {
-		return "", fmt.Errorf("unexpected session response: %T", val)
-	}
-
-	accessToken, _ := session["access_token"].(string)
-	if accessToken == "" {
-		return "", fmt.Errorf("no access_token in session response")
-	}
-
-	var userName, userEmail string
-	switch u := session["user"].(type) {
-	case map[string]interface{}:
-		userName, _ = u["name"].(string)
-		userEmail, _ = u["email"].(string)
-	case string:
-		var userObj map[string]interface{}
-		if err := json.Unmarshal([]byte(u), &userObj); err == nil {
-			userName, _ = userObj["name"].(string)
-			userEmail, _ = userObj["email"].(string)
+	fmt.Println("  Waiting for session...")
+	const maxWait = 5 * 60
+	for i := 0; i < maxWait/3; i++ {
+		val, err := c.evaluate(target.WebSocketDebug, `window.electron.ipcInvoke('get-session')`, true)
+		if err != nil {
+			time.Sleep(3 * time.Second)
+			continue
 		}
-	}
-	if userEmail != "" {
-		fmt.Printf("  CDP token: user=%s email=%s\n", userName, userEmail)
+
+		session, ok := val.(map[string]interface{})
+		if !ok {
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
+		accessToken, _ := session["access_token"].(string)
+		if accessToken != "" {
+			var userName, userEmail string
+			switch u := session["user"].(type) {
+			case map[string]interface{}:
+				userName, _ = u["name"].(string)
+				userEmail, _ = u["email"].(string)
+			case string:
+				var userObj map[string]interface{}
+				if err := json.Unmarshal([]byte(u), &userObj); err == nil {
+					userName, _ = userObj["name"].(string)
+					userEmail, _ = userObj["email"].(string)
+				}
+			}
+			if userEmail != "" {
+				fmt.Printf("  CDP token: user=%s email=%s\n", userName, userEmail)
+			}
+
+			if clientID := decodeClientID(accessToken); clientID != "" {
+				fmt.Printf("  Client ID: %s\n", clientID)
+			}
+
+			return accessToken, nil
+		}
+
+		if i == 0 {
+			fmt.Println("  Not signed in. Sign in through the Granola window — I'll wait...")
+		}
+		time.Sleep(3 * time.Second)
 	}
 
-	return accessToken, nil
+	return "", fmt.Errorf("timed out waiting for login after 5 minutes")
+}
+
+func decodeClientID(jwt string) string {
+	parts := strings.Split(jwt, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	s := parts[1]
+	switch len(s) % 4 {
+	case 2:
+		s += "=="
+	case 3:
+		s += "="
+	}
+	payload, err := base64.URLEncoding.DecodeString(s)
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		ClientID string `json:"client_id"`
+		Iss      string `json:"iss"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	if claims.ClientID != "" {
+		return claims.ClientID
+	}
+	if idx := strings.LastIndex(claims.Iss, "/"); idx >= 0 {
+		return claims.Iss[idx+1:]
+	}
+	return ""
 }

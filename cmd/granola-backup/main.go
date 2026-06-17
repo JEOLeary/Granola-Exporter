@@ -40,6 +40,7 @@ func main() {
 	exclude := flag.String("exclude", strVal(cfg.Exclude, ""), "Comma-separated folder names to exclude (e.g. \"Personal,Brag Docs\")")
 	refreshTokenFile := flag.String("refresh-token-file", strVal(cfg.RefreshTokenFile, ""), "Path to refresh_token.json from granola-backup -extract-token-only (skips all fallback methods)")
 	extractTokenOnly := flag.String("extract-token-only", "", "Extract refresh_token.json and exit (no export)")
+	login := flag.Bool("login", false, "Authenticate with Granola via browser (writes refresh_token.json)")
 	flag.String("config", "", "Path to config file (default: granola-backup.yaml/yml in current dir)")
 	flag.Parse()
 
@@ -110,6 +111,14 @@ func main() {
 		return
 	}
 
+	if *login {
+		if err := api.BrowserLogin("", "refresh_token.json"); err != nil {
+			fmt.Fprintf(os.Stderr, "Login failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// file-based first, CDP fallback
 	tryExportViaFileAPI(outDir, createdAfter, *overwrite, *debug, excludeList)
 	tryExportViaCDP(*granolaPath, outDir, createdAfter, *overwrite, *debug, excludeList)
@@ -141,7 +150,7 @@ func tryExportViaCDP(granolaPath, outputDir string, createdAfter *string, overwr
 	}
 
 	fmt.Println("\nAll extraction methods failed.")
-	fmt.Println("Try: run 'granola-backup' after launching Granola manually.")
+	fmt.Println("Open Granola, sign in, then run again.")
 	os.Exit(1)
 }
 
