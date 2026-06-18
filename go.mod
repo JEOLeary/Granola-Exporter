@@ -1,4 +1,4 @@
-module github.com/JEOLeary/granola-backup
+module github.com/granola-exporter/granola-backup
 
 go 1.24.5
 

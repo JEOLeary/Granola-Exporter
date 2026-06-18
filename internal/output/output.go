@@ -11,7 +11,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/JEOLeary/granola-backup/internal/api"
+	"github.com/granola-exporter/granola-backup/internal/api"
 )
 
 const defaultTemplate = `# {{.Title}}
@@ -206,56 +206,39 @@ func WriteMeeting(dir string, m Meeting, overwrite bool, manifest *Manifest) (st
 		}
 	}
 
+	firstDir := dir
+	writePath := filepath.Join(dir, relPath)
 	if len(m.Lists) > 0 {
-		firstDir := filepath.Join(dir, SafeFilename(m.Lists[0].Title))
-		if err := os.MkdirAll(firstDir, 0755); err != nil {
-			return "", fmt.Errorf("mkdir %s: %w", firstDir, err)
-		}
-		firstPath := filepath.Join(firstDir, filename)
+		firstDir = filepath.Join(dir, SafeFilename(m.Lists[0].Title))
+		writePath = filepath.Join(firstDir, filename)
+	}
 
-		if manifest == nil && !overwrite {
-			if _, err := os.Stat(firstPath); err == nil {
-				return "", nil
-			}
-		}
+	if err := os.MkdirAll(filepath.Dir(writePath), 0755); err != nil {
+		return "", fmt.Errorf("mkdir: %w", err)
+	}
 
-		if _, err := writeMeetingFile(firstPath, m); err != nil {
-			return "", err
-		}
+	if _, err := writeMeetingFile(writePath, m); err != nil {
+		return "", err
+	}
 
-		for _, list := range m.Lists[1:] {
-			linkDir := filepath.Join(dir, SafeFilename(list.Title))
-			if err := os.MkdirAll(linkDir, 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "  warning: mkdir %s: %v\n", linkDir, err)
-				continue
-			}
-			linkPath := filepath.Join(linkDir, filename)
-			if err := os.Link(firstPath, linkPath); err != nil {
-				err2 := os.Symlink(firstPath, linkPath)
-				if err2 != nil {
-					input, err3 := os.ReadFile(firstPath)
-					if err3 != nil {
-						fmt.Fprintf(os.Stderr, "  warning: copy %s: %v\n", linkPath, err3)
-					} else if err3 := os.WriteFile(linkPath, input, 0644); err3 != nil {
-						fmt.Fprintf(os.Stderr, "  warning: write %s: %v\n", linkPath, err3)
-					}
+	for i := 1; i < len(m.Lists); i++ {
+		list := m.Lists[i]
+		linkDir := filepath.Join(dir, SafeFilename(list.Title))
+		if err := os.MkdirAll(linkDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "  warning: mkdir %s: %v\n", linkDir, err)
+			continue
+		}
+		linkPath := filepath.Join(linkDir, filename)
+		if err := os.Link(writePath, linkPath); err != nil {
+			err2 := os.Symlink(writePath, linkPath)
+			if err2 != nil {
+				input, err3 := os.ReadFile(writePath)
+				if err3 != nil {
+					fmt.Fprintf(os.Stderr, "  warning: copy %s: %v\n", linkPath, err3)
+				} else if err3 := os.WriteFile(linkPath, input, 0644); err3 != nil {
+					fmt.Fprintf(os.Stderr, "  warning: write %s: %v\n", linkPath, err3)
 				}
 			}
-		}
-	} else {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return "", fmt.Errorf("mkdir: %w", err)
-		}
-		filePath := filepath.Join(dir, filename)
-
-		if manifest == nil && !overwrite {
-			if _, err := os.Stat(filePath); err == nil {
-				return "", nil
-			}
-		}
-
-		if _, err := writeMeetingFile(filePath, m); err != nil {
-			return "", err
 		}
 	}
 

@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JEOLeary/granola-backup/internal/api"
-	"github.com/JEOLeary/granola-backup/internal/cdp"
-	"github.com/JEOLeary/granola-backup/internal/output"
+	"github.com/granola-exporter/granola-backup/internal/api"
+	"github.com/granola-exporter/granola-backup/internal/cdp"
+	"github.com/granola-exporter/granola-backup/internal/output"
 )
 
 type refreshTokenFile struct {
@@ -30,7 +30,7 @@ func main() {
 
 	outputDir := flag.String("output", strVal(cfg.Output, "Granola.ai"), "Output directory for markdown files")
 	granolaPath := flag.String("granola-path",
-		strVal(cfg.GranolaPath, `C:\Users\JEOLeary\AppData\Local\Programs\granola\Granola.exe`),
+		strVal(cfg.GranolaPath, `C:\Users\{USERNAME}\AppData\Local\Programs\granola\Granola.exe`),
 		"Granola executable path")
 	days := flag.Int("days", intVal(cfg.Days, 365), "Number of days of history to fetch")
 	sinceStr := flag.String("since", strVal(cfg.Since, ""), "Fetch meetings created after this date (YYYY-MM-DD or RFC3339). Takes priority over -days")
@@ -171,23 +171,10 @@ func computeCreatedAfter(outputDir string, sinceLastExport bool, days int, since
 }
 
 func exportViaToken(token string, outputDir string, createdAfter *string, overwrite bool, debug bool, exclude []string) (int, error) {
-	docs, err := api.FetchAllDocumentsAfter(token, createdAfter)
+	docs, listMapping, err := fetchDocsAndLists(token, createdAfter)
 	if err != nil {
-		return 0, fmt.Errorf("fetch: %w", err)
+		return 0, err
 	}
-	fmt.Printf("  Found %d documents\n", len(docs))
-
-	listMapping, _ := api.FetchDocumentLists(token)
-	if listMapping != nil {
-		fmt.Printf("  Found %d folder(s)\n", len(listMapping))
-	} else {
-		fmt.Println("  No folder mapping available")
-	}
-
-	sort.Slice(docs, func(i, j int) bool {
-		return docs[i].CreatedAt > docs[j].CreatedAt
-	})
-
 	manifest := output.LoadManifest(outputDir)
 	return processDocs(docs, listMapping, manifest, token, outputDir, overwrite, debug, exclude), nil
 }
@@ -376,13 +363,22 @@ func exportViaAPI(outputDir string, createdAfter *string, overwrite bool, debug 
 		}
 	}
 
-	docs, err := api.FetchAllDocumentsAfter(creds.AccessToken, createdAfter)
+	docs, listMapping, err := fetchDocsAndLists(creds.AccessToken, createdAfter)
 	if err != nil {
-		return 0, fmt.Errorf("fetch: %w", err)
+		return 0, err
+	}
+	manifest := output.LoadManifest(outputDir)
+	return processDocs(docs, listMapping, manifest, creds.AccessToken, outputDir, overwrite, debug, exclude), nil
+}
+
+func fetchDocsAndLists(token string, createdAfter *string) ([]api.APIDocument, map[string][]api.ListInfo, error) {
+	docs, err := api.FetchAllDocumentsAfter(token, createdAfter)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch: %w", err)
 	}
 	fmt.Printf("  Found %d documents\n", len(docs))
 
-	listMapping, _ := api.FetchDocumentLists(creds.AccessToken)
+	listMapping, _ := api.FetchDocumentLists(token)
 	if listMapping != nil {
 		fmt.Printf("  Found %d folder(s)\n", len(listMapping))
 	} else {
@@ -392,7 +388,5 @@ func exportViaAPI(outputDir string, createdAfter *string, overwrite bool, debug 
 	sort.Slice(docs, func(i, j int) bool {
 		return docs[i].CreatedAt > docs[j].CreatedAt
 	})
-
-	manifest := output.LoadManifest(outputDir)
-	return processDocs(docs, listMapping, manifest, creds.AccessToken, outputDir, overwrite, debug, exclude), nil
+	return docs, listMapping, nil
 }

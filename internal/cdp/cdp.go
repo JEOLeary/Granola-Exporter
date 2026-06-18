@@ -1,7 +1,6 @@
 package cdp
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/granola-exporter/granola-backup/internal/api"
 	"github.com/gorilla/websocket"
 )
 
@@ -32,7 +32,7 @@ func NewCDPExtractor(granolaPath string) *CDPExtractor {
 }
 
 func (c *CDPExtractor) findGranolaProcesses() ([]int, error) {
-	cmd := exec.Command("pwsh", "-NoProfile", "-Command",
+	cmd := exec.Command("powershell", "-NoProfile", "-Command",
 		"Get-Process Granola -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id")
 	out, err := cmd.Output()
 	if err != nil {
@@ -250,7 +250,7 @@ func (c *CDPExtractor) FetchToken() (string, error) {
 				fmt.Printf("  CDP token: user=%s email=%s\n", userName, userEmail)
 			}
 
-			if clientID := decodeClientID(accessToken); clientID != "" {
+			if clientID := api.ExtractClientID(accessToken); clientID != "" {
 				fmt.Printf("  Client ID: %s\n", clientID)
 			}
 
@@ -264,36 +264,4 @@ func (c *CDPExtractor) FetchToken() (string, error) {
 	}
 
 	return "", fmt.Errorf("timed out waiting for login after 5 minutes")
-}
-
-func decodeClientID(jwt string) string {
-	parts := strings.Split(jwt, ".")
-	if len(parts) < 2 {
-		return ""
-	}
-	s := parts[1]
-	switch len(s) % 4 {
-	case 2:
-		s += "=="
-	case 3:
-		s += "="
-	}
-	payload, err := base64.URLEncoding.DecodeString(s)
-	if err != nil {
-		return ""
-	}
-	var claims struct {
-		ClientID string `json:"client_id"`
-		Iss      string `json:"iss"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return ""
-	}
-	if claims.ClientID != "" {
-		return claims.ClientID
-	}
-	if idx := strings.LastIndex(claims.Iss, "/"); idx >= 0 {
-		return claims.Iss[idx+1:]
-	}
-	return ""
 }

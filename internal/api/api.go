@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JEOLeary/granola-backup/internal/encryptedjson"
-	"github.com/JEOLeary/granola-backup/internal/redact"
+	"github.com/granola-exporter/granola-backup/internal/encryptedjson"
+	"github.com/granola-exporter/granola-backup/internal/redact"
 )
 
 var (
@@ -51,7 +51,6 @@ type DocumentsRequest struct {
 	IncludeSharedWithMe   bool    `json:"include_shared_with_me"`
 	IncludeLastViewedPanel bool   `json:"include_last_viewed_panel,omitempty"`
 	CreatedAfter          *string `json:"created_after,omitempty"`
-	CreatedBefore         *string `json:"created_before,omitempty"`
 }
 
 type DocumentsResponse struct {
@@ -282,7 +281,7 @@ func ExtractClientID(jwt string) string {
 	if len(parts) < 2 {
 		return ""
 	}
-	payload, err := decodeBase64URL(parts[1])
+	payload, err := DecodeBase64URL(parts[1])
 	if err != nil {
 		return ""
 	}
@@ -298,7 +297,7 @@ func ExtractClientID(jwt string) string {
 	return ""
 }
 
-func decodeBase64URL(s string) ([]byte, error) {
+func DecodeBase64URL(s string) ([]byte, error) {
 	switch len(s) % 4 {
 	case 2:
 		s += "=="
