@@ -143,7 +143,7 @@ days: 365
 since: ""
 overwrite: false
 debug: false
-granola-path: "C:\\Users\\{USERNAME}}\\AppData\\Local\\Programs\\granola\\Granola.exe"
+granola-path: "C:\\Users\\{USERNAME}\\AppData\\Local\\Programs\\granola\\Granola.exe"
 exclude: "Personal,Brag Docs"
 refresh-token-file: ""
 ```
@@ -385,7 +385,6 @@ Earlier projects exploring the undocumented Granola API — [graincrawl](https:/
 ### Decryption
 
 - **macOS Keychain verification**: The AES-GCM decryption path for macOS (`internal/encryptedjson/`) follows the standard Electron safeStorage format but has not been tested on actual macOS hardware.
-- **Fix `encryptedjson` DPAPI path**: `decryptWindowsDPAPI` passes the raw encrypted file to `CryptUnprotectData` with `dwFlags=0`. This fails (error 13) because `.enc` files are not raw DPAPI — they are AES-GCM encrypted with the DEK key from `storage.dek`. The Chromium/Electron DPAPI key in `Local State` requires stripping the 5-byte `"DPAPI"` prefix and using `ProtectedData.Unprotect` (which passes `CRYPTPROTECT_UI_FORBIDDEN` flag).
 
 ### Features
 
