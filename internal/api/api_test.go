@@ -585,6 +585,98 @@ func TestFetchAllDocumentsAfter(t *testing.T) {
 	}
 }
 
+func TestParseTime(t *testing.T) {
+	t.Run("RFC3339", func(t *testing.T) {
+		tm, err := ParseTime("2026-06-17T17:30:19Z")
+		if err != nil {
+			t.Fatalf("ParseTime() error = %v", err)
+		}
+		if tm.Year() != 2026 || tm.Month() != 6 || tm.Day() != 17 {
+			t.Errorf("ParseTime() = %v, want 2026-06-17", tm)
+		}
+	})
+
+	t.Run("RFC3339Nano with fractional seconds", func(t *testing.T) {
+		tm, err := ParseTime("2026-06-17T17:30:19.123456Z")
+		if err != nil {
+			t.Fatalf("ParseTime() error = %v", err)
+		}
+		if tm.Nanosecond() != 123456000 {
+			t.Errorf("ParseTime() nanoseconds = %d, want 123456000", tm.Nanosecond())
+		}
+	})
+
+	t.Run("RFC3339 with timezone offset", func(t *testing.T) {
+		tm, err := ParseTime("2026-06-17T17:30:19+00:00")
+		if err != nil {
+			t.Fatalf("ParseTime() error = %v", err)
+		}
+		if tm.Year() != 2026 {
+			t.Errorf("ParseTime() = %v, want 2026", tm)
+		}
+	})
+
+	t.Run("empty string", func(t *testing.T) {
+		_, err := ParseTime("")
+		if err == nil {
+			t.Fatal("ParseTime() expected error for empty string")
+		}
+	})
+}
+
+func TestMeetingTimeRange(t *testing.T) {
+	t.Run("both timestamps present", func(t *testing.T) {
+		segments := []TranscriptSegment{
+			{Text: "Speaker 1: Hello", StartTimestamp: "2026-01-15T16:00:00Z", EndTimestamp: "2026-01-15T16:30:00Z"},
+			{Text: "Speaker 2: World", StartTimestamp: "2026-01-15T16:30:00Z", EndTimestamp: "2026-01-15T17:00:00Z"},
+		}
+		end, dur := MeetingTimeRange(segments, time.Time{})
+		if end.IsZero() {
+			t.Error("MeetingTimeRange() returned zero end time")
+		}
+		if dur != 1*time.Hour {
+			t.Errorf("MeetingTimeRange() duration = %v, want 1h0m0s", dur)
+		}
+	})
+
+	t.Run("missing EndTimestamp falls back to StartTimestamp", func(t *testing.T) {
+		segments := []TranscriptSegment{
+			{Text: "Speaker 1: Hello", StartTimestamp: "2026-01-15T16:00:00Z"},
+			{Text: "Speaker 2: World", StartTimestamp: "2026-01-15T16:30:00Z"},
+		}
+		end, dur := MeetingTimeRange(segments, time.Time{})
+		if end.IsZero() {
+			t.Error("MeetingTimeRange() returned zero end time with missing EndTimestamp")
+		}
+		if dur != 30*time.Minute {
+			t.Errorf("MeetingTimeRange() duration = %v, want 30m0s", dur)
+		}
+	})
+
+	t.Run("no segments", func(t *testing.T) {
+		end, dur := MeetingTimeRange(nil, time.Time{})
+		if !end.IsZero() {
+			t.Error("MeetingTimeRange() should return zero end time for no segments")
+		}
+		if dur != 0 {
+			t.Errorf("MeetingTimeRange() duration = %v, want 0", dur)
+		}
+	})
+
+	t.Run("no parseable timestamps", func(t *testing.T) {
+		segments := []TranscriptSegment{
+			{Text: "Speaker 1: Hello", StartTimestamp: ""},
+		}
+		end, dur := MeetingTimeRange(segments, time.Time{})
+		if !end.IsZero() {
+			t.Error("MeetingTimeRange() should return zero end time for no parseable timestamps")
+		}
+		if dur != 0 {
+			t.Errorf("MeetingTimeRange() duration = %v, want 0", dur)
+		}
+	})
+}
+
 func mustMarshal(v interface{}) string {
 	b, _ := json.Marshal(v)
 	return string(b)

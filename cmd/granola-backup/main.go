@@ -63,7 +63,10 @@ func main() {
 	if *exportAll {
 		*overwrite = true
 	}
-	createdAfter := computeCreatedAfter(outDir, sinceLastExport, *days, *sinceStr)
+	var createdAfter *string
+	if !*exportAll {
+		createdAfter = computeCreatedAfter(outDir, sinceLastExport, *days, *sinceStr)
+	}
 
 	fmt.Println("=== Granola Backup ===")
 	fmt.Println("Output:", outDir)
@@ -183,15 +186,18 @@ func processDocs(docs []api.APIDocument, listMapping map[string][]api.ListInfo, 
 	var mu sync.Mutex
 	exported := 0
 
-	cutoff := len(docs)
-	for i, doc := range docs {
-		if _, exists := manifest.Contains(doc.ID); exists {
-			cutoff = i
-			fmt.Printf("  stopping at already-exported: %s\n", doc.ID[:8])
-			break
+	pending := docs
+	if !overwrite {
+		cutoff := len(docs)
+		for i, doc := range docs {
+			if _, exists := manifest.Contains(doc.ID); exists {
+				cutoff = i
+				fmt.Printf("  stopping at already-exported: %s\n", doc.ID[:8])
+				break
+			}
 		}
+		pending = docs[:cutoff]
 	}
-	pending := docs[:cutoff]
 
 	if len(exclude) > 0 {
 		var filtered []api.APIDocument
@@ -264,18 +270,27 @@ func processDocs(docs []api.APIDocument, listMapping map[string][]api.ListInfo, 
 				}
 			}
 
-			var transcript string
 			segments, err := api.FetchTranscript(token, doc.ID)
-			if err == nil && len(segments) > 0 {
-				transcript = api.FormatTranscript(segments)
+			if err != nil {
+				segments = nil
+			}
+
+			endTime, duration := api.MeetingTimeRange(segments, dt)
+			if duration == 0 {
+				if updatedAt, err := api.ParseTime(doc.UpdatedAt); err == nil {
+					endTime = updatedAt
+					duration = endTime.Sub(dt)
+				}
 			}
 
 			m := output.Meeting{
 				ID:         doc.ID,
 				Title:      title,
 				Notes:      notes,
-				Transcript: transcript,
+				Segments:   segments,
 				DateTime:   dt,
+				DateTimeEnd: endTime,
+				Duration:   duration,
 				Lists:      listMapping[doc.ID],
 			}
 

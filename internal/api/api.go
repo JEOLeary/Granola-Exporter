@@ -297,6 +297,18 @@ func ExtractClientID(jwt string) string {
 	return ""
 }
 
+func ParseTime(s string) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339, s)
+	if err == nil {
+		return t, nil
+	}
+	t, err = time.Parse(time.RFC3339Nano, s)
+	if err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("cannot parse time: %q", s)
+}
+
 func DecodeBase64URL(s string) ([]byte, error) {
 	switch len(s) % 4 {
 	case 2:
@@ -734,6 +746,43 @@ func FetchTranscript(token, docID string) ([]TranscriptSegment, error) {
 	return segments, nil
 }
 
+func MeetingTimeRange(segments []TranscriptSegment, _ time.Time) (endTime time.Time, duration time.Duration) {
+	if len(segments) == 0 {
+		return time.Time{}, 0
+	}
+
+	var minStart, maxEnd time.Time
+	hasValid := false
+
+	for _, seg := range segments {
+		start, err1 := ParseTime(seg.StartTimestamp)
+		end, err2 := ParseTime(seg.EndTimestamp)
+		if err1 != nil {
+			continue
+		}
+		if err2 != nil {
+			end = start
+		}
+		if !hasValid {
+			minStart, maxEnd = start, end
+			hasValid = true
+		} else {
+			if start.Before(minStart) {
+				minStart = start
+			}
+			if end.After(maxEnd) {
+				maxEnd = end
+			}
+		}
+	}
+
+	if !hasValid {
+		return time.Time{}, 0
+	}
+
+	return maxEnd, maxEnd.Sub(minStart)
+}
+
 func FormatTranscript(segments []TranscriptSegment) string {
 	if len(segments) == 0 {
 		return ""
@@ -820,7 +869,7 @@ func FetchDocumentLists(token string) (map[string][]ListInfo, error) {
 }
 
 func ExtractDateFromDoc(doc APIDocument) time.Time {
-	t, err := time.Parse(time.RFC3339, doc.CreatedAt)
+	t, err := ParseTime(doc.CreatedAt)
 	if err == nil {
 		return t
 	}

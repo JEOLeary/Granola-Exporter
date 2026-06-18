@@ -14,28 +14,33 @@ import (
 	"github.com/granola-exporter/granola-backup/internal/api"
 )
 
-const defaultTemplate = `# {{.Title}}
+const defaultMeetingTemplate = `# {{.Meeting.Title}}
 
-Date/Time: {{.DateTimeFormatted}}
-
-Meeting ID: {{.MeetingID}}
+Date/Time: {{.Meeting.StartDateTimeFormatted}}
+{{if .Meeting.EndDateTimeFormatted}}End Time: {{.Meeting.EndDateTimeFormatted}}{{end}}
+{{if .Meeting.DurationFormatted}}Duration: {{.Meeting.DurationFormatted}}{{end}}
+Meeting ID: {{.Meeting.ID}}
 
 ## Notes
 
-{{if .Notes}}{{.Notes}}{{else}}*No notes*{{end}}
+{{if .Meeting.Notes}}{{.Meeting.Notes}}{{else}}*No notes*{{end}}
 
 ---
 
 ## Transcript
 
-{{if .Transcript}}{{.Transcript}}{{else}}*No transcript*{{end}}`
+{{if .Meeting.Transcript}}{{.Meeting.Transcript}}{{else}}*No transcript*{{end}}`
+
+const defaultSegmentTemplate = `{{.TranscriptSegment.Speaker}}: {{.TranscriptSegment.Text}}`
 
 type Meeting struct {
 	ID         string
 	Title      string
 	DateTime   time.Time
+	DateTimeEnd time.Time
+	Duration   time.Duration
 	Notes      string
-	Transcript string
+	Segments   []api.TranscriptSegment
 	Lists      []api.ListInfo
 }
 
@@ -249,18 +254,36 @@ func WriteMeeting(dir string, m Meeting, overwrite bool, manifest *Manifest) (st
 	return relPath, nil
 }
 
-type templateData struct {
-	Title             string
-	DateTimeFormatted string
-	MeetingID         string
-	Notes             string
-	Transcript        string
+type meetingFields struct {
+	Title                string
+	StartDateTimeFormatted string
+	EndDateTimeFormatted  string
+	DurationFormatted    string
+	ID                   string
+	Notes                string
+	Transcript           string
 }
 
-func ensureTemplate(dir string) (string, error) {
+type templateData struct {
+	Meeting meetingFields
+}
+
+type transcriptSegmentFields struct {
+	Index int
+	Speaker      string
+	Text         string
+	Source       string
+	IsFinal      bool
+}
+
+type segmentTemplateData struct {
+	TranscriptSegment transcriptSegmentFields
+}
+
+func ensureMeetingTemplate(dir string) (string, error) {
 	startDir := dir
 	for i := 0; i < 3; i++ {
-		p := filepath.Join(dir, "template.md")
+		p := filepath.Join(dir, "meeting_template.md")
 		if b, err := os.ReadFile(p); err == nil && len(b) > 0 {
 			return string(b), nil
 		}
@@ -270,18 +293,96 @@ func ensureTemplate(dir string) (string, error) {
 		}
 		dir = parent
 	}
-	tmplPath := filepath.Join(startDir, "template.md")
+	tmplPath := filepath.Join(startDir, "meeting_template.md")
 	if err := os.MkdirAll(startDir, 0755); err == nil {
-		os.WriteFile(tmplPath, []byte(defaultTemplate), 0644)
+		os.WriteFile(tmplPath, []byte(defaultMeetingTemplate), 0644)
 	}
-	return defaultTemplate, nil
+	return defaultMeetingTemplate, nil
+}
+
+func ensureSegmentTemplate(dir string) (string, error) {
+	startDir := dir
+	for i := 0; i < 3; i++ {
+		p := filepath.Join(dir, "transcript_segment_template.md")
+		if b, err := os.ReadFile(p); err == nil && len(b) > 0 {
+			return string(b), nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	tmplPath := filepath.Join(startDir, "transcript_segment_template.md")
+	if err := os.MkdirAll(startDir, 0755); err == nil {
+		os.WriteFile(tmplPath, []byte(defaultSegmentTemplate), 0644)
+	}
+	return defaultSegmentTemplate, nil
+}
+
+func formatSegments(segments []api.TranscriptSegment, dir string) string {
+	if len(segments) == 0 {
+		return ""
+	}
+
+	tmplSrc, err := ensureSegmentTemplate(dir)
+	if err != nil {
+		return ""
+	}
+	tmpl, err := template.New("segment").Parse(tmplSrc)
+	if err != nil {
+		return ""
+	}
+
+	var prevSpeaker string
+	var rendered []string
+
+	for idx, seg := range segments {
+		text := strings.TrimSpace(seg.Text)
+		if text == "" {
+			continue
+		}
+
+		speaker := ""
+		if strings.HasPrefix(text, "Speaker ") {
+			if i := strings.Index(text, ": "); i >= 0 {
+				speaker = text[:i]
+				text = strings.TrimSpace(text[i+2:])
+			}
+		}
+		if speaker == "" {
+			speaker = prevSpeaker
+			if speaker == "" {
+				speaker = "Speaker"
+			}
+		}
+		prevSpeaker = speaker
+
+		data := segmentTemplateData{
+			TranscriptSegment: transcriptSegmentFields{
+				Index: idx,
+				Speaker:      speaker,
+				Text:         text,
+				Source:       seg.Source,
+				IsFinal:      seg.IsFinal,
+			},
+		}
+
+		var buf strings.Builder
+		if err := tmpl.Execute(&buf, data); err != nil {
+			continue
+		}
+		rendered = append(rendered, strings.TrimRight(buf.String(), "\n"))
+	}
+
+	return strings.Join(rendered, "\n\n")
 }
 
 func writeMeetingFile(path string, m Meeting) (string, error) {
 	notes := strings.TrimSpace(m.Notes)
-	transcript := strings.TrimSpace(m.Transcript)
+	transcript := formatSegments(m.Segments, filepath.Dir(path))
 
-	tmplSrc, err := ensureTemplate(filepath.Dir(path))
+	tmplSrc, err := ensureMeetingTemplate(filepath.Dir(path))
 	if err != nil {
 		return "", fmt.Errorf("template: %w", err)
 	}
@@ -295,13 +396,32 @@ func writeMeetingFile(path string, m Meeting) (string, error) {
 		id = m.ID
 	}
 
+	var endFormatted string
+	if !m.DateTimeEnd.IsZero() {
+		endFormatted = m.DateTimeEnd.Local().Format("Monday January 2, 2006 3:04 PM")
+	}
+	var durFormatted string
+	if m.Duration > 0 {
+		h := int(m.Duration.Hours())
+		mins := int(m.Duration.Minutes()) % 60
+		if h > 0 {
+			durFormatted = fmt.Sprintf("%dh %dm", h, mins)
+		} else {
+			durFormatted = fmt.Sprintf("%dm", mins)
+		}
+	}
+
 	var buf strings.Builder
 	if err := tmpl.Execute(&buf, templateData{
-		Title:             m.Title,
-		DateTimeFormatted: m.DateTime.Format("Mon Jan 2 15:04:05 2006"),
-		MeetingID:         id,
-		Notes:             notes,
-		Transcript:        transcript,
+		Meeting: meetingFields{
+			Title:                m.Title,
+			StartDateTimeFormatted: m.DateTime.Local().Format("Monday January 2, 2006 3:04 PM"),
+			EndDateTimeFormatted:  endFormatted,
+			DurationFormatted:    durFormatted,
+			ID:            id,
+			Notes:                notes,
+			Transcript:           transcript,
+		},
 	}); err != nil {
 		return "", fmt.Errorf("template exec: %w", err)
 	}

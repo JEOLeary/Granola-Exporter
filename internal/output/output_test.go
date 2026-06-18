@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/granola-exporter/granola-backup/internal/api"
 )
 
 func TestSafeFilename(t *testing.T) {
@@ -35,11 +37,13 @@ func TestSafeFilename(t *testing.T) {
 func TestWriteMeetingFile(t *testing.T) {
 	dir := t.TempDir()
 	m := Meeting{
-		ID:         "test-id",
-		Title:      "Test Meeting",
-		DateTime:   time.Date(2026, 1, 15, 16, 0, 0, 0, time.UTC),
-		Notes:      "Meeting notes content",
-		Transcript: "Speaker 1: Hello",
+		ID:       "test-id",
+		Title:    "Test Meeting",
+		DateTime: time.Date(2026, 1, 15, 16, 0, 0, 0, time.UTC),
+		Notes:    "Meeting notes content",
+		Segments: []api.TranscriptSegment{
+			{Text: "Speaker 1: Hello"},
+		},
 	}
 	path, err := writeMeetingFile(dir+"/test.md", m)
 	if err != nil {
@@ -144,32 +148,32 @@ func TestManifestBackwardCompat(t *testing.T) {
 	}
 }
 
-func TestEnsureTemplate(t *testing.T) {
-	t.Run("uses existing template.md", func(t *testing.T) {
+func TestEnsureMeetingTemplate(t *testing.T) {
+	t.Run("uses existing meeting_template.md", func(t *testing.T) {
 		dir := t.TempDir()
-		os.WriteFile(dir+"/template.md", []byte("custom: {{.Title}}"), 0644)
+		os.WriteFile(dir+"/meeting_template.md", []byte("custom: {{.Meeting.Title}}"), 0644)
 
-		src, err := ensureTemplate(dir)
+		src, err := ensureMeetingTemplate(dir)
 		if err != nil {
-			t.Fatalf("ensureTemplate() error = %v", err)
+			t.Fatalf("ensureMeetingTemplate() error = %v", err)
 		}
-		if src != "custom: {{.Title}}" {
-			t.Errorf("ensureTemplate() = %q, want custom template", src)
+		if src != "custom: {{.Meeting.Title}}" {
+			t.Errorf("ensureMeetingTemplate() = %q, want custom template", src)
 		}
 	})
 
-	t.Run("creates default template.md when missing", func(t *testing.T) {
+	t.Run("creates default meeting_template.md when missing", func(t *testing.T) {
 		dir := t.TempDir()
 
-		src, err := ensureTemplate(dir)
+		src, err := ensureMeetingTemplate(dir)
 		if err != nil {
-			t.Fatalf("ensureTemplate() error = %v", err)
+			t.Fatalf("ensureMeetingTemplate() error = %v", err)
 		}
 		if src == "" {
-			t.Fatal("ensureTemplate() returned empty template")
+			t.Fatal("ensureMeetingTemplate() returned empty template")
 		}
-		if _, err := os.Stat(dir + "/template.md"); err != nil {
-			t.Errorf("template.md should have been created: %v", err)
+		if _, err := os.Stat(dir + "/meeting_template.md"); err != nil {
+			t.Errorf("meeting_template.md should have been created: %v", err)
 		}
 	})
 
@@ -177,26 +181,99 @@ func TestEnsureTemplate(t *testing.T) {
 		parent := t.TempDir()
 		subdir := parent + "/sub"
 		os.MkdirAll(subdir, 0755)
-		os.WriteFile(parent+"/template.md", []byte("parent: {{.Title}}"), 0644)
+		os.WriteFile(parent+"/meeting_template.md", []byte("parent: {{.Meeting.Title}}"), 0644)
 
-		src, err := ensureTemplate(subdir)
+		src, err := ensureMeetingTemplate(subdir)
 		if err != nil {
-			t.Fatalf("ensureTemplate() error = %v", err)
+			t.Fatalf("ensureMeetingTemplate() error = %v", err)
 		}
-		if src != "parent: {{.Title}}" {
-			t.Errorf("ensureTemplate() = %q, want parent template", src)
+		if src != "parent: {{.Meeting.Title}}" {
+			t.Errorf("ensureMeetingTemplate() = %q, want parent template", src)
 		}
 	})
+}
+
+func TestEnsureSegmentTemplate(t *testing.T) {
+	t.Run("uses existing transcript_segment_template.md", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(dir+"/transcript_segment_template.md", []byte("[[{{.TranscriptSegment.Speaker}}]] {{.TranscriptSegment.Text}}"), 0644)
+
+		src, err := ensureSegmentTemplate(dir)
+		if err != nil {
+			t.Fatalf("ensureSegmentTemplate() error = %v", err)
+		}
+		if src != "[[{{.TranscriptSegment.Speaker}}]] {{.TranscriptSegment.Text}}" {
+			t.Errorf("ensureSegmentTemplate() = %q, want custom template", src)
+		}
+	})
+
+	t.Run("creates default when missing", func(t *testing.T) {
+		dir := t.TempDir()
+
+		src, err := ensureSegmentTemplate(dir)
+		if err != nil {
+			t.Fatalf("ensureSegmentTemplate() error = %v", err)
+		}
+		if src == "" {
+			t.Fatal("ensureSegmentTemplate() returned empty template")
+		}
+		if _, err := os.Stat(dir + "/transcript_segment_template.md"); err != nil {
+			t.Errorf("transcript_segment_template.md should have been created: %v", err)
+		}
+	})
+
+	t.Run("walks up to parent directory", func(t *testing.T) {
+		parent := t.TempDir()
+		subdir := parent + "/sub"
+		os.MkdirAll(subdir, 0755)
+		os.WriteFile(parent+"/transcript_segment_template.md", []byte("parent segment tmpl"), 0644)
+
+		src, err := ensureSegmentTemplate(subdir)
+		if err != nil {
+			t.Fatalf("ensureSegmentTemplate() error = %v", err)
+		}
+		if src != "parent segment tmpl" {
+			t.Errorf("ensureSegmentTemplate() = %q, want parent template", src)
+		}
+	})
+}
+
+func TestFormatSegments(t *testing.T) {
+	t.Run("renders segments with default template", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(dir+"/transcript_segment_template.md", []byte("{{.TranscriptSegment.Speaker}}: {{.TranscriptSegment.Text}}"), 0644)
+
+		segments := []api.TranscriptSegment{
+			{Text: "Speaker 1: Hello", StartTimestamp: "2026-01-15T16:00:00Z", EndTimestamp: "2026-01-15T16:01:00Z", Source: "diarization", IsFinal: true},
+			{Text: "Speaker 2: World", StartTimestamp: "2026-01-15T16:01:00Z", EndTimestamp: "2026-01-15T16:02:00Z", Source: "diarization", IsFinal: true},
+		}
+
+		got := formatSegments(segments, dir)
+		want := "Speaker 1: Hello\n\nSpeaker 2: World"
+		if got != want {
+			t.Errorf("formatSegments() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("empty segments", func(t *testing.T) {
+		got := formatSegments(nil, t.TempDir())
+		if got != "" {
+			t.Errorf("formatSegments() = %q, want empty", got)
+		}
+	})
+
 }
 
 func TestWriteMeetingIntegration(t *testing.T) {
 	dir := t.TempDir()
 	m := Meeting{
-		ID:         "test-id",
-		Title:      "Integration Test",
-		DateTime:   time.Date(2026, 6, 12, 14, 30, 0, 0, time.UTC),
-		Notes:      "Test notes",
-		Transcript: "Speaker 1: Test transcript",
+		ID:       "test-id",
+		Title:    "Integration Test",
+		DateTime: time.Date(2026, 6, 12, 14, 30, 0, 0, time.UTC),
+		Notes:    "Test notes",
+		Segments: []api.TranscriptSegment{
+			{Text: "Speaker 1: Test transcript"},
+		},
 	}
 
 	manifest := &Manifest{Version: 1}

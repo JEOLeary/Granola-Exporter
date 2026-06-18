@@ -1,0 +1,1 @@
+{{.TranscriptSegment.Speaker}}: {{.TranscriptSegment.Text}}

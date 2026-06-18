@@ -160,7 +160,8 @@ granola-backup -config /path/to/config.yaml
 
 ```text
 Granola.ai/
-  template.md                      # customizable output template (auto-created)
+  meeting_template.md              # customizable meeting template (auto-created)
+  transcript_segment_template.md   # customizable transcript segment template (auto-created)
   exported.json                    # dedup manifest
   Personal/
     (2026-01-15 16-16-01) Title.md
@@ -172,33 +173,48 @@ Granola.ai/
 
 ### File Content
 
-Each meeting file is rendered from `template.md` using Go's `text/template` engine. A default template is auto-created in the output directory on the first run:
+Each meeting file is rendered from two templates using Go's `text/template` engine:
+
+1. **`meeting_template.md`** — the per-meeting layout (title, notes, transcript section)
+2. **`transcript_segment_template.md`** — formatting for each individual transcript segment (speaker, text, timestamps)
+
+Defaults are auto-created in the output directory on the first run:
+
+**Default `meeting_template.md`:**
 
 ```markdown
-# {{.Title}}
+# {{.Meeting.Title}}
 
-Date/Time: {{.DateTimeFormatted}}
-
-Meeting ID: {{.MeetingID}}
+Date/Time: {{.Meeting.StartDateTimeFormatted}}
+{{if .Meeting.EndDateTimeFormatted}}End Time: {{.Meeting.EndDateTimeFormatted}}{{end}}
+{{if .Meeting.DurationFormatted}}Duration: {{.Meeting.DurationFormatted}}{{end}}
+Meeting ID: {{.Meeting.ID}}
 
 ## Notes
 
-{{if .Notes}}{{.Notes}}{{else}}_No notes_{{end}}
+{{if .Meeting.Notes}}{{.Meeting.Notes}}{{else}}*No notes*{{end}}
 
 ---
 
 ## Transcript
 
-{{if .Transcript}}{{.Transcript}}{{else}}_No transcript_{{end}}
+{{if .Meeting.Transcript}}{{.Meeting.Transcript}}{{else}}*No transcript*{{end}}
 ```
 
-The default template produces files like:
+**Default `transcript_segment_template.md`:**
+
+```text
+{{.TranscriptSegment.Speaker}}: {{.TranscriptSegment.Text}}
+```
+
+The rendered meeting files look like:
 
 ```markdown
 # Meeting Title
 
-Date/Time: Mon Jan 15 16:16:01 2026
-
+Date/Time: Monday January 15, 2026 4:16 PM
+End Time: Monday January 15, 2026 5:30 PM
+Duration: 1h 14m
 Meeting ID: 00dd79a5-5d63-4aec-8d5f-bd50e4766e4d
 
 ## Notes
@@ -214,25 +230,41 @@ Speaker 1: First line of transcript.
 Speaker 2: Response line.
 ```
 
-### Customizing the Template
+### Customizing the Meeting Template
 
-Edit `template.md` in the output directory to change how meetings are formatted. Template variables:
+Edit `meeting_template.md` in the output directory to change how meetings are formatted. Template variables:
 
 | Variable | Description |
 | - | - |
-| `{{.Title}}` | Meeting title |
-| `{{.DateTimeFormatted}}` | Date/time formatted as `Mon Jan 2 15:04:05 2006` |
-| `{{.MeetingID}}` | Unique meeting identifier |
-| `{{.Notes}}` | Meeting notes content (or empty string) |
-| `{{.Transcript}}` | Meeting transcript (or empty string) |
+| `{{.Meeting.Title}}` | Meeting title |
+| `{{.Meeting.StartDateTimeFormatted}}` | Meeting start time in local timezone, formatted as `Monday January 2, 2006 3:04 PM` |
+| `{{.Meeting.EndDateTimeFormatted}}` | Meeting end time in local timezone (or empty if no transcript) |
+| `{{.Meeting.DurationFormatted}}` | Duration (e.g. `1h 14m` or empty if no transcript) |
+| `{{.Meeting.ID}}` | Unique meeting identifier |
+| `{{.Meeting.Notes}}` | Meeting notes content (or empty string) |
+| `{{.Meeting.Transcript}}` | Transcript built from `transcript_segment_template.md`, each segment rendered individually |
 
 **Conditionals** hide sections when a variable is empty:
 
 ```markdown
-{{if .Notes}}{{.Notes}}{{else}}_No notes_{{end}}
+{{if .Meeting.Notes}}{{.Meeting.Notes}}{{else}}_No notes_{{end}}
 ```
 
-The template is read from disk every run. The binary searches from the file's directory upward to the output root, so you can use different templates per folder.
+Both templates are read from disk every run. The binary searches from the file's directory upward to the output root, so you can use different templates per folder.
+
+### Customizing the Segment Template
+
+Edit `transcript_segment_template.md` to control how each speaker turn is formatted. Per-segment variables:
+
+| Variable | Description |
+| - | - |
+| `{{.TranscriptSegment.Speaker}}` | Speaker label (e.g. `Speaker A`, `Speaker B`, or previous speaker on continuation) |
+| `{{.TranscriptSegment.Text}}` | Segment text without speaker prefix |
+| `{{.TranscriptSegment.Source}}` | Source label for the segment (e.g. `diarization` from the Granola API) |
+| `{{.TranscriptSegment.IsFinal}}` | Whether the segment is a final transcription (`true`/`false`) |
+| `{{.TranscriptSegment.Index}}` | 0-based index of the segment |
+
+The segment template is rendered separately for each segment, then the results are joined with blank lines. The first segment without the speaker prefix inherits the previous speaker's label.
 
 ### Folder Organization
 
