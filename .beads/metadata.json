@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "Granola_Exporter",
+  "project_id": "264d6cd4-a164-42ba-a186-2c647cd85741"
+}
